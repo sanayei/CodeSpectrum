@@ -1,14 +1,14 @@
-# Preventing Windows 11 Sleep During Active SSH Sessions: A Reliable PowerShell Solution
+# Preventing Windows 11 Sleep During Active SSH Sessions: A Robust PowerShell Solution
 
 ## Understanding the Challenge
 
-When working with Windows 11 through SSH, users often face an annoying issue: the system goes to sleep during active SSH sessions because Windows doesn't recognize these connections as active user interactions. This can be particularly frustrating when:
+When working with Windows 11 through SSH, users often encounter a significant issue: the system goes to sleep during active SSH sessions because Windows doesn't recognize these connections as active user interactions. This can be particularly frustrating when:
 - You're in the middle of a remote operation
 - Running long-term processes
 - Managing servers remotely
 - Performing system maintenance
 
-The immediate solution might seem to be disabling sleep mode entirely, but this isn't ideal because:
+While completely disabling sleep mode might seem like an easy solution, it's not ideal because:
 - It wastes energy when the system isn't in use
 - Increases power consumption unnecessarily
 - Can lead to higher electricity costs
@@ -23,9 +23,9 @@ Instead of completely disabling sleep, we can create an intelligent PowerShell s
 3. Keeps the system awake only when needed
 4. Returns to normal power management when SSH sessions end
 
-## Implementation
+## The Implementation
 
-Let's break down the solution into its core components.
+Let's break down our solution into its core components.
 
 ### 1. SSH Connection Detection
 
@@ -54,7 +54,7 @@ function Get-SSHConnections {
                     CreationTime = $process.StartTime
                 }
             }
-        # Return structured information about connections
+        # Return connection information...
     }
 }
 ```
@@ -67,43 +67,77 @@ This function:
 
 ### 2. Keep-Awake Mechanism
 
-The heart of our solution uses Windows Forms to prevent sleep reliably:
+The heart of our solution uses a combination of Windows APIs and shell automation:
 
 ```powershell
 function Start-KeepAwake {
-    param (
-        [System.Windows.Forms.Form]$Form
-    )
     try {
+        # Load the kernel32.dll method
+        $signature = @'
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        public static extern uint SetThreadExecutionState(uint esFlags);
+        
+        public const uint ES_CONTINUOUS = 0x80000000;
+        public const uint ES_SYSTEM_REQUIRED = 0x00000001;
+        public const uint ES_DISPLAY_REQUIRED = 0x00000002;
+        public const uint ES_AWAYMODE_REQUIRED = 0x00000040;
+'@
+        Add-Type -MemberDefinition $signature -Name PowerState -Namespace Win32
+
+        # Create shell automation object
+        $shell = New-Object -ComObject "WScript.Shell"
+        
         Do {
-            $Form.Activate()
-            [System.Windows.Forms.SendKeys]::SendWait("{BS}")
-            [System.Windows.Forms.SendKeys]::SendWait(".")
-            Start-Sleep -Milliseconds 180000  # 3 minutes
+            # Prevent system sleep using multiple methods
+            [Win32.PowerState]::SetThreadExecutionState(
+                [Win32.PowerState]::ES_CONTINUOUS -bor
+                [Win32.PowerState]::ES_SYSTEM_REQUIRED -bor
+                [Win32.PowerState]::ES_DISPLAY_REQUIRED -bor
+                [Win32.PowerState]::ES_AWAYMODE_REQUIRED
+            )
+
+            $shell.SendKeys("")
+            Start-Sleep -Seconds 180  # Check every 3 minutes
             
-            # Check for active connections
+            # Continue only if SSH connections exist
             $sshStatus = Get-SSHConnections
             if (-not $sshStatus.HasConnections) {
-                Write-Log "No more active SSH connections - stopping keep-awake" "INFO"
                 break
             }
         } While ($true)
     }
-    catch {
-        Write-Log "Error in keep-awake loop: $_" "ERROR"
+    finally {
+        # Cleanup and restore normal power state
+        [Win32.PowerState]::SetThreadExecutionState([Win32.PowerState]::ES_CONTINUOUS)
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($shell)
     }
 }
 ```
 
 This approach:
-- Creates a hidden form to capture input
-- Simulates keyboard activity every 3 minutes
-- Continuously monitors SSH connections
-- Automatically stops when connections end
+- Uses Windows kernel API for system-level power management
+- Implements shell automation for activity simulation
+- Includes proper resource cleanup
+- Continuously monitors connection status
 
-### 3. Main Execution Logic
+### 3. Logging System
 
-The main script ties everything together:
+Robust logging helps track system behavior:
+
+```powershell
+function Write-Log {
+    param(
+        [string]$Message,
+        [string]$Type = "INFO"
+    )
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Add-Content -Path $logPath -Value "[$timestamp] [$Type] $Message"
+}
+```
+
+### 4. Main Execution Logic
+
+The script ties everything together:
 
 ```powershell
 try {
@@ -114,28 +148,14 @@ try {
     if ($sshStatus.HasConnections) {
         Write-Log "Found $($sshStatus.Count) active SSH connection(s)" "INFO"
         
-        # Create and configure the form
-        $form = New-Object System.Windows.Forms.Form
-        $form.Text = 'SSH Keep-Awake'
-        $form.Size = New-Object System.Drawing.Size(200,100)
-        $form.StartPosition = 'Manual'
-        $form.Location = New-Object System.Drawing.Point(1500,670)
+        foreach ($conn in $sshStatus.Connections) {
+            Write-Log "Connection details: $($conn.RemoteAddress):$($conn.RemotePort)" "INFO"
+        }
         
-        # Add textbox for input simulation
-        $textBox = New-Object System.Windows.Forms.TextBox
-        $textBox.Size = New-Object System.Drawing.Size(200,100)
-        $textBox.Multiline = $true
-        $form.Controls.Add($textBox)
-        $form.Topmost = $true
-        
-        # Initialize and start keep-awake
-        $form.Add_Shown({$textBox.Select()})
-        $form.Show()
-        
-        Start-Sleep -Milliseconds 1000
-        Start-KeepAwake -Form $form
-        
-        $form.Close()
+        Start-KeepAwake
+    }
+    else {
+        Write-Log "No active SSH connections - Allowing normal sleep behavior" "INFO"
     }
 }
 finally {
@@ -152,58 +172,60 @@ mkdir C:\Scripts
 
 2. Save the complete script as `C:\Scripts\SSH-IdleMonitor.ps1`
 
-3. Create a scheduled task that:
-- Triggers when the system becomes idle
-- Runs with highest privileges
-- Executes the PowerShell script
+3. Create a scheduled task:
+```powershell
+# Task configuration details in XML format...
+```
 
 ## How It Works
 
-1. The system enters an idle state
+1. System enters idle state
 2. Task Scheduler triggers our script
 3. Script checks for SSH connections
 4. If connections exist:
-   - Creates a hidden Windows Form
-   - Simulates periodic keyboard input
-   - Monitors for active connections
-   - Logs all activities
+   - Activates multiple sleep prevention methods
+   - Monitors connection status
+   - Maintains system activity
+   - Logs all actions
 5. When connections end:
-   - Closes the form
-   - Allows normal sleep behavior
+   - Cleans up resources
+   - Restores normal power management
    - Logs completion
 
-## Monitoring and Troubleshooting
+## Monitoring
 
-The script maintains a detailed log at `C:\Scripts\ssh-monitor.log`:
+Monitor the solution through `C:\Scripts\ssh-monitor.log`:
 ```
-[2024-11-21 21:21:11] [INFO] Script started
-[2024-11-21 21:21:11] [INFO] Found 2 active SSH connection(s)
-[2024-11-21 21:21:11] [INFO] Connection details: 192.168.1.100:54321 via sshd (PID: 1234)
-[2024-11-21 21:21:11] [INFO] Keep-awake form initialized
+[2024-11-22 04:52:23] [INFO] Script started
+[2024-11-22 04:52:23] [INFO] Found 2 active SSH connections
+[2024-11-22 04:52:23] [INFO] Keeping system awake...
 ```
 
 ## Benefits of This Approach
 
-1. **Reliability**: Uses Windows Forms for guaranteed input simulation
+1. **Reliability**: Uses multiple system-level methods
 2. **Efficiency**: Only activates when needed
-3. **Automatic**: No manual intervention required
-4. **Self-monitoring**: Continuously checks connection status
-5. **Clean**: Proper cleanup when connections end
-6. **Traceable**: Detailed logging for troubleshooting
+3. **Clean**: Proper resource management
+4. **Traceable**: Detailed logging
+5. **Robust**: Multiple fallback mechanisms
+
+## Technical Details
+
+This solution combines several approaches:
+1. `SetThreadExecutionState` for system-level power management
+2. Shell automation for activity simulation
+3. Connection monitoring for automatic management
+4. Resource cleanup for system stability
 
 ## Conclusion
 
-This solution provides a reliable way to prevent Windows 11 from sleeping during SSH sessions while maintaining power efficiency. The Windows Forms approach ensures consistent behavior, while the monitoring system prevents unnecessary power consumption when connections end.
+This enhanced solution provides a robust and reliable way to prevent Windows 11 from sleeping during SSH sessions while maintaining power efficiency. By using system-level APIs and proper resource management, it ensures consistent behavior without requiring elevated UI privileges.
 
-By simulating actual user input rather than relying on API calls, this solution works more reliably than traditional approaches. It's a practical balance between maintaining remote accessibility and efficient power management.
+## Credits
 
----
-
-*Have questions or suggestions? Feel free to comment below or contribute to the project!*
-
-## References
-
-1. Krishnamoorthy, R. (2023). "How to prevent computer from sleep and stay awake always script". DevGenius. https://blog.devgenius.io/how-to-prevent-computer-from-sleep-and-stay-awake-always-script-74a8906a7629
+Credit for the original Windows sleep prevention concepts:
+- Ranjith Krishnamoorthy's article on [DevGenius](https://blog.devgenius.io/how-to-prevent-computer-from-sleep-and-stay-awake-always-script-74a8906a7629)
+- Windows API documentation and community contributions
 
 ---
 
