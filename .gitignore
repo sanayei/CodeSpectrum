@@ -1,3 +1,7 @@
 data
 doc-ai/data/*
 doc-ai/output/*
+doc-ai/donut/lightning_logs/*
+doc-ai/donut/sroie_2019_v2/*
+doc-ai/donut/test/*
+doc-ai/donut/train/*
